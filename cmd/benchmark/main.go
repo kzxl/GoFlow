@@ -67,7 +67,7 @@ func benchPool() {
 	fmt.Println("  ├──────────┼───────────┼──────────────┼────────────┼────────────┤")
 
 	for _, cfg := range configs {
-		p := pool.New(pool.Workers(cfg.workers), pool.QueueSize(cfg.queueSize))
+		p, _ := pool.New(cfg.workers)
 		var counter atomic.Int64
 
 		// Warmup
@@ -96,7 +96,7 @@ func benchPool() {
 
 	// Latency distribution
 	fmt.Printf("\n  📈 Latency Distribution (%d samples, 8 workers)\n", LATENCY)
-	p := pool.New(pool.Workers(8), pool.QueueSize(10000))
+	p, _ := pool.New(8)
 	latencies := make([]int64, LATENCY)
 	for i := 0; i < LATENCY; i++ {
 		idx := i

@@ -45,35 +45,47 @@ import (
 
 ### Pool
 
-Bounded goroutine worker pool with backpressure and metrics.
+High-performance goroutine worker pool, inspired by [ants](https://github.com/panjf2000/ants) (13K★).
+
+**Key design:** Worker goroutines are **reused** via `sync.Pool` + LIFO stack (no goroutine-per-task overhead). Idle workers are automatically purged by a scavenger goroutine.
 
 ```go
 import "github.com/kzxl/goflow/pool"
 
-// Create pool with 8 workers, queue capacity 1000
-p := pool.New(pool.Workers(8), pool.QueueSize(1000))
+// Create pool with 8 goroutines max
+p, _ := pool.New(8)
 defer p.Close()
+
+// Unlimited pool
+p, _ := pool.New(0)
+
+// Non-blocking mode (returns error instead of blocking)
+p, _ := pool.New(100, pool.Nonblocking())
 
 // Submit tasks
 for _, item := range items {
-    p.Submit(func() {
-        process(item)
-    })
+    p.Submit(func() { process(item) })
 }
-
-// Wait for all tasks to complete
 p.Wait()
 
-// Check metrics
+// Dynamic resize at runtime
+p.Tune(16)
+
+// Metrics
 m := p.Metrics()
-fmt.Printf("Completed: %d, Avg latency: %v\n", m.Completed, m.AvgLatency)
+fmt.Printf("Running: %d, Completed bringing: %d\n", m.Running, m.Completed)
 ```
 
-**Features:**
-- `Submit(task)` — blocks if queue full (backpressure)
-- `TrySubmit(task)` — non-blocking, returns false if full
-- `SubmitWithError(task)` — tracks errors in metrics
-- `Metrics()` — submitted, completed, failed, avg/max latency
+ants-inspired features:
+- **Worker reuse** — `sync.Pool` + LIFO stack, no goroutine-per-task overhead
+- **Expiry purge** — scavenger goroutine removes idle workers (configurable `ExpiryDuration`)
+- **sync.Cond blocking** — efficient wait/signal, no spin loops
+- **Nonblocking mode** — `ErrPoolOverload` instead of blocking
+- **MaxBlockingTasks** — limit goroutines waiting for workers  
+- **Panic recovery** — per-task, worker continues after panic
+- **Tune / Reboot** — resize at runtime, restart after Release
+- **PreAlloc** — pre-allocate worker stack for predictable memory
+
 
 ---
 

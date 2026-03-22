@@ -83,8 +83,10 @@ func New(opts ...Option) *Engine {
 		opt(cfg)
 	}
 
+	p, _ := pool.New(cfg.workers)
+
 	return &Engine{
-		pool:     pool.New(pool.Workers(cfg.workers), pool.QueueSize(cfg.queueSize)),
+		pool:     p,
 		handlers: make(map[string]HandlerInfo),
 	}
 }

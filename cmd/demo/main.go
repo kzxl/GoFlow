@@ -39,7 +39,7 @@ func main() {
 func demoPool() {
 	printHeader("1. Worker Pool")
 
-	p := pool.New(pool.Workers(4), pool.QueueSize(100))
+	p, _ := pool.New(4)
 
 	var sum atomic.Int64
 	for i := 1; i <= 100; i++ {
@@ -256,7 +256,7 @@ func demoBenchmark() {
 
 	// Pool throughput
 	start := time.Now()
-	p := pool.New(pool.Workers(8), pool.QueueSize(10000))
+	p, _ := pool.New(8)
 	var counter atomic.Int64
 	for i := 0; i < N; i++ {
 		p.Submit(func() { counter.Add(1) })
