@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-GoFlow provides **8 production-ready modules** for concurrent/parallel processing in Go, plus a **cross-language engine** that allows C#, Python, or any gRPC-compatible language to submit tasks for processing.
+GoFlow provides **11 production-ready modules** for concurrent/parallel processing in Go, plus a **cross-language engine** that allows C#, Python, or any gRPC-compatible language to submit tasks for processing.
 
 ---
 
@@ -13,7 +13,10 @@ GoFlow provides **8 production-ready modules** for concurrent/parallel processin
 
 | Module | Description | Key Feature |
 |--------|-------------|-------------|
-| [`pool`](#pool) | Bounded goroutine worker pool | Backpressure, metrics, lock-free |
+| [`pool`](#pool) | Goroutine worker pool (ants-inspired) | Worker reuse, Tune, Expiry purge |
+| [`pool.PoolWithFunc`](#poolwithfunc) | Typed pool — fixed handler | Zero closure alloc, less GC |
+| [`future`](#future) | Future/Promise pattern | Then, All, Race, GetTimeout |
+| [`errgroup`](#errorgroup) | Error group with cancellation | First-error cancel, bounded |
 | [`parallel`](#parallel) | Parallel Map/ForEach/Filter/Reduce | Generic, order-preserving |
 | [`pipeline`](#pipeline) | Multi-stage processing pipeline | Per-stage concurrency |
 | [`retry`](#retry) | Retry with exponential backoff | Jitter, custom predicates |
@@ -33,9 +36,12 @@ go get github.com/kzxl/goflow
 
 ```go
 import (
-    "github.com/kzxl/goflow/parallel"
-    "github.com/kzxl/goflow/pool"
-    "github.com/kzxl/goflow/retry"
+    "github.com/kzxl/goflow/pool"      // worker pool
+    "github.com/kzxl/goflow/future"    // async results
+    "github.com/kzxl/goflow/errgroup"  // error group
+    "github.com/kzxl/goflow/parallel"  // parallel map/filter/reduce
+    "github.com/kzxl/goflow/pipeline"  // multi-stage pipeline
+    "github.com/kzxl/goflow/retry"     // retry with backoff
 )
 ```
 
@@ -86,6 +92,70 @@ ants-inspired features:
 - **Tune / Reboot** — resize at runtime, restart after Release
 - **PreAlloc** — pre-allocate worker stack for predictable memory
 
+---
+
+### PoolWithFunc
+
+Typed pool with a fixed handler — avoids closure allocation per task (less GC pressure).
+
+```go
+p, _ := pool.NewWithFunc(8, func(arg any) {
+    item := arg.(MyItem)
+    process(item)
+})
+defer p.Close()
+
+for _, item := range items {
+    p.Invoke(item)  // no closure created!
+}
+p.Wait()
+```
+
+---
+
+### Future
+
+Generic Future/Promise pattern for async results.
+
+```go
+import "github.com/kzxl/goflow/future"
+
+f := future.Go(func() (int, error) { return expensiveCalc(), nil })
+// ... do other work ...
+result, err := f.Get()            // block until done
+result, err := f.GetTimeout(5*s)  // with timeout
+
+// Chain transformations
+f2 := future.Then(f, func(n int) (string, error) {
+    return fmt.Sprintf("result=%d", n), nil
+})
+
+// Wait for all / race
+results, _ := future.All(f1, f2, f3)
+winner, _ := future.Race(f1, f2)
+```
+
+---
+
+### ErrorGroup
+
+Parallel execution with first-error cancellation and bounded concurrency.
+
+```go
+import "github.com/kzxl/goflow/errgroup"
+
+g, ctx := errgroup.New(errgroup.Workers(4))
+
+for _, url := range urls {
+    g.GoWithContext(func(ctx context.Context) error {
+        return fetch(ctx, url)
+    })
+}
+
+if err := g.Wait(); err != nil {
+    log.Fatal("first error:", err)
+}
+```
 
 ---
 
