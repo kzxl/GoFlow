@@ -1,5 +1,8 @@
 // Package parallel provides high-level parallel processing primitives.
 //
+// All functions include panic recovery — a panicking worker won't crash
+// the entire operation. Panics are converted to errors where applicable.
+//
 // # Usage
 //
 //	// Map: transform items in parallel
@@ -14,6 +17,7 @@ package parallel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -21,14 +25,16 @@ import (
 type Option func(*config)
 
 type config struct {
-	workers int
-	ctx     context.Context
+	workers      int
+	ctx          context.Context
+	minChunkSize int // minimum items per goroutine to avoid overhead
 }
 
 func defaultConfig() *config {
 	return &config{
-		workers: 8,
-		ctx:     context.Background(),
+		workers:      8,
+		ctx:          context.Background(),
+		minChunkSize: 0, // 0 = disabled (1 goroutine per item)
 	}
 }
 
@@ -48,9 +54,20 @@ func WithContext(ctx context.Context) Option {
 	}
 }
 
+// MinChunkSize sets the minimum items per goroutine.
+// If len(input)/workers < MinChunkSize, fewer goroutines are spawned.
+// This prevents goroutine overhead from dominating trivial work.
+func MinChunkSize(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.minChunkSize = n
+		}
+	}
+}
+
 // Map applies fn to each element of input in parallel, returning results
-// in the same order. If any fn returns an error, it's captured in the
-// corresponding position of the errors slice.
+// in the same order. If any fn returns an error or panics, it's captured
+// in the corresponding position of the errors slice.
 func Map[T any, R any](input []T, fn func(T) (R, error), opts ...Option) ([]R, []error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -73,7 +90,7 @@ func Map[T any, R any](input []T, fn func(T) (R, error), opts ...Option) ([]R, [
 			for j := i; j < n; j++ {
 				errs[j] = cfg.ctx.Err()
 			}
-			break
+			goto done
 		case sem <- struct{}{}:
 		}
 
@@ -81,10 +98,16 @@ func Map[T any, R any](input []T, fn func(T) (R, error), opts ...Option) ([]R, [
 		go func(idx int, val T) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					errs[idx] = fmt.Errorf("panic in parallel.Map worker: %v", r)
+				}
+			}()
 			results[idx], errs[idx] = fn(val)
 		}(i, item)
 	}
 
+done:
 	wg.Wait()
 
 	// Check if all errors are nil
@@ -103,6 +126,7 @@ func Map[T any, R any](input []T, fn func(T) (R, error), opts ...Option) ([]R, [
 }
 
 // MapSimple is like Map but for functions that don't return errors.
+// Uses chunked processing when work is trivial to avoid goroutine overhead.
 func MapSimple[T any, R any](input []T, fn func(T) R, opts ...Option) []R {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -115,17 +139,38 @@ func MapSimple[T any, R any](input []T, fn func(T) R, opts ...Option) []R {
 	}
 
 	results := make([]R, n)
-	sem := make(chan struct{}, cfg.workers)
-	var wg sync.WaitGroup
 
-	for i, item := range input {
-		sem <- struct{}{}
+	// Auto-chunk: if items are few relative to workers, use chunked mode
+	workers := cfg.workers
+	if workers > n {
+		workers = n
+	}
+
+	chunkSize := (n + workers - 1) / workers
+	if cfg.minChunkSize > 0 && chunkSize < cfg.minChunkSize {
+		chunkSize = cfg.minChunkSize
+		workers = (n + chunkSize - 1) / chunkSize
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > n {
+			end = n
+		}
+		if start >= end {
+			continue
+		}
+
 		wg.Add(1)
-		go func(idx int, val T) {
+		go func(s, e int) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			results[idx] = fn(val)
-		}(i, item)
+			defer func() { recover() }() // panic recovery
+			for i := s; i < e; i++ {
+				results[i] = fn(input[i])
+			}
+		}(start, end)
 	}
 
 	wg.Wait()
@@ -133,6 +178,7 @@ func MapSimple[T any, R any](input []T, fn func(T) R, opts ...Option) []R {
 }
 
 // ForEach processes each element in parallel. Blocks until all are done.
+// Panics in workers are recovered silently.
 func ForEach[T any](input []T, fn func(T), opts ...Option) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -148,6 +194,7 @@ func ForEach[T any](input []T, fn func(T), opts ...Option) {
 		go func(val T) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() { recover() }()
 			fn(val)
 		}(item)
 	}
@@ -156,6 +203,7 @@ func ForEach[T any](input []T, fn func(T), opts ...Option) {
 }
 
 // ForEachWithError processes each element in parallel, collecting errors.
+// Panics are converted to errors.
 func ForEachWithError[T any](input []T, fn func(T) error, opts ...Option) []error {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -173,6 +221,11 @@ func ForEachWithError[T any](input []T, fn func(T) error, opts ...Option) []erro
 		go func(idx int, val T) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					errs[idx] = fmt.Errorf("panic in parallel.ForEachWithError worker: %v", r)
+				}
+			}()
 			errs[idx] = fn(val)
 		}(i, item)
 	}
@@ -193,7 +246,7 @@ func ForEachWithError[T any](input []T, fn func(T) error, opts ...Option) []erro
 }
 
 // Filter returns elements for which the predicate returns true, evaluated in parallel.
-// Order is preserved.
+// Order is preserved. Panics in workers are recovered (element excluded).
 func Filter[T any](input []T, predicate func(T) bool, opts ...Option) []T {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -215,6 +268,7 @@ func Filter[T any](input []T, predicate func(T) bool, opts ...Option) []T {
 		go func(idx int, val T) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() { recover() }()
 			keep[idx] = predicate(val)
 		}(i, item)
 	}
@@ -270,6 +324,7 @@ func Reduce[T any](input []T, identity T, combiner func(T, T) T, opts ...Option)
 		wg.Add(1)
 		go func(idx, s, e int) {
 			defer wg.Done()
+			defer func() { recover() }()
 			acc := identity
 			for i := s; i < e; i++ {
 				acc = combiner(acc, input[i])

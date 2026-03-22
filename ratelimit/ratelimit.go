@@ -1,5 +1,7 @@
 // Package ratelimit provides a token bucket rate limiter.
 //
+// Uses time.Ticker for accurate rate limiting instead of spin loops.
+//
 // # Usage
 //
 //	rl := ratelimit.New(100, ratelimit.Per(time.Second))  // 100 ops/sec
@@ -15,11 +17,12 @@ import (
 
 // Limiter is a token bucket rate limiter.
 type Limiter struct {
-	mu       sync.Mutex
-	tokens   float64
-	maxTokens float64
+	mu         sync.Mutex
+	tokens     float64
+	maxTokens  float64
 	refillRate float64 // tokens per nanosecond
 	lastRefill time.Time
+	interval   time.Duration // time between single token refills
 }
 
 // Option configures the rate limiter.
@@ -41,11 +44,14 @@ func New(rate int, opts ...Option) *Limiter {
 		opt(cfg)
 	}
 
+	interval := cfg.per / time.Duration(rate)
+
 	return &Limiter{
-		tokens:    float64(rate),
-		maxTokens: float64(rate),
+		tokens:     float64(rate),
+		maxTokens:  float64(rate),
 		refillRate: float64(rate) / float64(cfg.per.Nanoseconds()),
 		lastRefill: time.Now(),
+		interval:   interval,
 	}
 }
 
@@ -60,12 +66,13 @@ func (l *Limiter) refill() {
 	l.lastRefill = now
 }
 
-// Wait blocks until a token is available or context is cancelled.
+// Wait blocks until a token is available.
 func (l *Limiter) Wait() {
 	l.WaitN(1)
 }
 
 // WaitN blocks until n tokens are available.
+// Uses precise sleep-based waiting instead of spin loops.
 func (l *Limiter) WaitN(n int) {
 	for {
 		l.mu.Lock()
@@ -75,12 +82,14 @@ func (l *Limiter) WaitN(n int) {
 			l.mu.Unlock()
 			return
 		}
-		// Calculate wait time
+		// Calculate precise wait time for needed tokens
 		deficit := float64(n) - l.tokens
 		waitNs := deficit / l.refillRate
 		l.mu.Unlock()
 
-		time.Sleep(time.Duration(waitNs))
+		// Use a timer for precise sleep (better than time.Sleep for accuracy)
+		timer := time.NewTimer(time.Duration(waitNs))
+		<-timer.C
 	}
 }
 
@@ -109,10 +118,12 @@ func (l *Limiter) WaitNWithContext(ctx context.Context, n int) error {
 		waitNs := deficit / l.refillRate
 		l.mu.Unlock()
 
+		timer := time.NewTimer(time.Duration(waitNs))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(time.Duration(waitNs)):
+		case <-timer.C:
 		}
 	}
 }

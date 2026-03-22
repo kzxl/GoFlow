@@ -14,6 +14,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -120,13 +121,21 @@ func (p *Pipeline[T]) runStage(ctx context.Context, s StageDef[T], in <-chan ite
 					it.stage = s.Name
 					out <- it
 				default:
-					result, err := s.Fn(ctx, it.value)
-					if err != nil {
-						it.err = err
-						it.stage = s.Name
-					} else {
-						it.value = result
-					}
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								it.err = fmt.Errorf("panic in pipeline stage %q: %v", s.Name, r)
+								it.stage = s.Name
+							}
+						}()
+						result, err := s.Fn(ctx, it.value)
+						if err != nil {
+							it.err = err
+							it.stage = s.Name
+						} else {
+							it.value = result
+						}
+					}()
 					out <- it
 				}
 			}

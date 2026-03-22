@@ -159,10 +159,12 @@ func (e *Engine) ExecuteBatch(ctx context.Context, tasks []TaskRequest) []TaskRe
 	var wg sync.WaitGroup
 
 	for i, task := range tasks {
+		idx := i
+		t := task
 		wg.Add(1)
 		e.pool.Submit(func() {
 			defer wg.Done()
-			results[i] = e.Execute(ctx, task)
+			results[idx] = e.Execute(ctx, t)
 		})
 	}
 
