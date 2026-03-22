@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package goflow;
+
+option go_package = "github.com/kzxl/goflow/proto";
+option csharp_namespace = "GoFlow.Client";
+
+// GoFlow gRPC Service — enables cross-language task submission
+service GoFlowService {
+  // Submit a single task and wait for result
+  rpc Execute(TaskRequest) returns (TaskResult);
+
+  // Submit multiple tasks, receive results as stream
+  rpc ExecuteStream(stream TaskRequest) returns (stream TaskResult);
+
+  // Get engine status and metrics
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+message TaskRequest {
+  string id = 1;              // Client-generated unique ID
+  string handler = 2;         // Registered handler name (e.g., "resize-image")
+  bytes payload = 3;          // JSON-encoded task data
+  map<string, string> metadata = 4;  // Optional metadata (priority, tags, etc.)
+  int32 timeout_ms = 5;       // Task timeout in milliseconds (0 = no timeout)
+}
+
+message TaskResult {
+  string id = 1;              // Matches the request ID
+  bool success = 2;
+  bytes data = 3;             // JSON-encoded result data
+  string error = 4;           // Error message if failed
+  int64 duration_ns = 5;      // Processing time in nanoseconds
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  int32 workers = 1;
+  int64 submitted = 2;
+  int64 completed = 3;
+  int64 failed = 4;
+  int64 pending = 5;
+  repeated HandlerInfo handlers = 6;
+}
+
+message HandlerInfo {
+  string name = 1;
+  string description = 2;
+}
